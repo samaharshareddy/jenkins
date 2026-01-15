@@ -1,0 +1,148 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'REPO_NAME', description: 'Git repo / API name')
+        string(name: 'BRANCH', defaultValue: 'main', description: 'Git branch')
+        choice(name: 'ENV', choices: ['dev', 'qa', 'prod'], description: 'Environment')
+    }
+
+    environment {
+        GIT_ORG = "samaharshareddy"
+        GIT_URL = "https://github.com/${GIT_ORG}/${params.REPO_NAME}.git"
+
+        // Docker Hub
+        DOCKERHUB_NAMESPACE = "samaharshareddy"   // Docker Hub username/org
+        IMAGE_NAME = "${params.REPO_NAME}"
+
+        CENTRAL_DOCKER_DIR = "/opt/mule-docker"
+        CENTRAL_DOCKERFILE = "/opt/mule-docker/Dockerfile"
+
+        MAVEN_OPTS = "-Dmaven.repo.local=.m2/repository"
+
+        GIT_CREDS = "github-token"
+        DOCKER_CREDS = "dockerhub-creds"
+    }
+
+    stages {
+
+        stage('Checkout Code') {
+            steps {
+                git branch: params.BRANCH,
+                    url: env.GIT_URL,
+                    credentialsId: env.GIT_CREDS
+            }
+        }
+
+        stage('Build Mule Application') {
+            steps {
+                sh 'mvn clean package -DskipTests'
+            }
+        }
+
+        stage('Resolve JAR') {
+            steps {
+                script {
+                    env.JAR_PATH = sh(
+                        script: "ls target/*.jar | grep -v original | head -1",
+                        returnStdout: true
+                    ).trim()
+
+                    if (!env.JAR_PATH) {
+                        error "No JAR found in target directory"
+                    }
+
+                    echo "Using JAR: ${env.JAR_PATH}"
+                }
+            }
+        }
+
+        stage('Prepare Docker Build Context') {
+            steps {
+                sh """
+                    cp ${JAR_PATH} ${CENTRAL_DOCKER_DIR}/
+                """
+            }
+        }
+
+        stage('Resolve Image Version (Docker Hub)') {
+            steps {
+                script {
+                    def latest = sh(
+                        script: """
+                        curl -s https://hub.docker.com/v2/repositories/${DOCKERHUB_NAMESPACE}/${IMAGE_NAME}/tags/ |
+                        jq -r '.results[].name' |
+                        grep '^v[0-9]\\+' |
+                        sed 's/v//' |
+                        sort -n |
+                        tail -1
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_VERSION = latest ? "v${latest.toInteger() + 1}" : "v1"
+
+                    env.LOCAL_IMAGE = "${IMAGE_NAME}:${env.IMAGE_VERSION}"
+                    env.REMOTE_IMAGE = "${DOCKERHUB_NAMESPACE}/${IMAGE_NAME}:${env.IMAGE_VERSION}"
+
+                    echo "Resolved image version: ${env.IMAGE_VERSION}"
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh """
+                    docker build \
+                      -f ${CENTRAL_DOCKERFILE} \
+                      --build-arg JAR_FILE=$(basename ${JAR_PATH}) \
+                      -t ${LOCAL_IMAGE} \
+                      ${CENTRAL_DOCKER_DIR}
+                """
+            }
+        }
+
+        stage('Docker Push (Docker Hub)') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: env.DOCKER_CREDS,
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh """
+                        echo "$DOCKER_PASS" | docker login \
+                          -u "$DOCKER_USER" --password-stdin
+
+                        docker tag ${LOCAL_IMAGE} ${REMOTE_IMAGE}
+                        docker push ${REMOTE_IMAGE}
+                    """
+                }
+            }
+        }
+
+        stage('Deploy (Optional)') {
+            when {
+                expression { params.ENV != 'dev' }
+            }
+            steps {
+                echo "Deploying ${params.REPO_NAME} to ${params.ENV}"
+                // Helm / ArgoCD / Anypoint deploy hook
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Image pushed: ${env.REMOTE_IMAGE}"
+        }
+        failure {
+            echo "❌ Pipeline failed for ${params.REPO_NAME}"
+        }
+        cleanup {
+            sh """
+                rm -f ${CENTRAL_DOCKER_DIR}/*.jar || true
+                docker logout || true
+            """
+        }
+    }
+}

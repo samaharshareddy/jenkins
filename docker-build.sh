@@ -119,7 +119,7 @@ fi
 # ---------------------------------------------------------
 # Step 13: Tag image for Harbor
 # ---------------------------------------------------------
-harbor_url="harborrmz.unionbankofindia.co.in/apim-mule-repo/$image_name:$next_version"
+harbor_url="harborrmz.sbiindia.co.in/apim-mule-repo/$image_name:$next_version"
 
 docker tag "$final_tag" "$harbor_url" && \
     echo "✅ Docker image tagged successfully." || {

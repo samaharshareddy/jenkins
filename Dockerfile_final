@@ -1,0 +1,36 @@
+ARG BASE_IMAGE=registry.access.redhat.com/ubi9/ubi
+FROM ${BASE_IMAGE}
+
+ENV JAVA_HOME=/opt/jre
+ENV MULE_HOME=/opt/mule
+ENV PATH="${PATH}:${JAVA_HOME}/bin"
+
+# Install required tools
+RUN yum install -y \
+        unzip \
+        curl \
+        jq \
+    && yum clean all
+
+# Copy JRE & Mule runtime (from build context)
+COPY jre*.tar.gz mule-*.zip /tmp/
+
+RUN mkdir -p /opt/jre /opt/mule && \
+    tar -xzf /tmp/jre*.tar.gz -C /opt/jre --strip-components=1 && \
+    unzip -q /tmp/mule-*.zip -d /tmp && \
+    mv /tmp/mule-* /opt/mule && \
+    rm -rf /tmp/*
+
+# -----------------------------
+# Application JAR (dynamic)
+# -----------------------------
+ARG JAR_FILE
+COPY ${JAR_FILE} ${MULE_HOME}/apps/
+
+# Security: non-root user
+RUN useradd --system mule && \
+    chown -R mule:mule /opt/mule
+
+USER mule
+
+CMD ["/opt/mule/bin/mule"]

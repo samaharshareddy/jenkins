@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=harborrmz.unionbankofindia.co.in/apim-mule-repo/rhel95-base
+ARG BASE_IMAGE=harborrmz./apim-mule-repo/rhel95-base
 
 # Default base image can be overridden with --build-arg
 FROM ${BASE_IMAGE}

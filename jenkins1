@@ -1,0 +1,92 @@
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = "apim-mule-app"
+        HARBOR_REGISTRY = "harborrmz.unionbankofindia.co.in/apim-mule-repo"
+        DOCKER_CREDENTIALS = "harbor-creds"
+    }
+
+    stages {
+
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build JAR') {
+            steps {
+                sh '''
+                    mvn clean package -DskipTests
+                '''
+            }
+        }
+
+        stage('Determine Image Version') {
+            steps {
+                script {
+                    def latest = sh(
+                        script: """
+                        docker images --format '{{.Repository}}:{{.Tag}}' \
+                        | grep '^${IMAGE_NAME}:v' \
+                        | awk -F:v '{print \$2}' \
+                        | sort -n \
+                        | tail -1
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    if (latest == "") {
+                        env.IMAGE_VERSION = "v1"
+                    } else {
+                        env.IMAGE_VERSION = "v${latest.toInteger() + 1}"
+                    }
+
+                    env.FULL_IMAGE = "${IMAGE_NAME}:${env.IMAGE_VERSION}"
+                    env.HARBOR_IMAGE = "${HARBOR_REGISTRY}/${IMAGE_NAME}:${env.IMAGE_VERSION}"
+
+                    echo "Building version: ${env.IMAGE_VERSION}"
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh '''
+                    docker build -t $FULL_IMAGE .
+                '''
+            }
+        }
+
+        stage('Docker Tag & Push') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: DOCKER_CREDENTIALS,
+                    usernameVariable: 'HARBOR_USER',
+                    passwordVariable: 'HARBOR_PASS'
+                )]) {
+                    sh '''
+                        echo "$HARBOR_PASS" | docker login $HARBOR_REGISTRY \
+                            -u "$HARBOR_USER" --password-stdin
+
+                        docker tag $FULL_IMAGE $HARBOR_IMAGE
+                        docker push $HARBOR_IMAGE
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Image pushed: ${HARBOR_IMAGE}"
+        }
+        failure {
+            echo "❌ Build failed"
+        }
+        cleanup {
+            sh 'docker logout || true'
+        }
+    }
+}
